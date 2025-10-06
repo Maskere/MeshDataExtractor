@@ -1,8 +1,30 @@
-﻿using System.Globalization;
+﻿using System.Diagnostics;
+using System.Globalization;
 using System.Numerics;
 
 namespace MeshDataExtract{
     public class MeshDataExtractor{
+        static Stopwatch sw = new();
+
+        public void FBXDataExtractor(string? filePath, out List<float> finalVertices, out List<uint> finalIndices){
+            if (filePath == null) throw new ArgumentException("Invalid file path.");
+            finalVertices = new();
+            finalIndices = new();
+
+            ReadOnlySpan<char> data = File.ReadAllText(filePath);
+            int pos = 0;
+
+            while(pos < data.Length){
+                int next = data[pos..].IndexOf('\n');
+                ReadOnlySpan<char> line = (next == -1) ? data[pos..] : data[pos..(pos + next)];
+                pos += (next == -1) ? data.Length : next + 1;
+
+                if(line[0] == ';') continue;
+
+                Console.WriteLine(line[0]);
+            }
+        }
+
         public void WavefrontObjDataExtractor(string? filePath, out List<float> finalVertices, out List<uint> finalIndices){
             if (filePath == null) throw new ArgumentException("Invalid file path.");
             finalVertices = new();
@@ -17,60 +39,27 @@ namespace MeshDataExtract{
 
             List<string> faceRefs = new(); 
 
-            try {
-                foreach (string line in File.ReadLines(filePath)) {
-                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
+            ReadOnlySpan<char> data = File.ReadAllText(filePath);
+            int pos = 0;
+            while(pos < data.Length){
+                int next = data[pos..].IndexOf('\n');
+                ReadOnlySpan<char> line = (next == -1) ? data[pos..] : data[pos..(pos + next)];
+                pos += (next == -1) ? data.Length : next + 1;
 
-                    string[] tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (tokens.Length == 0) continue;
+                if(line.Length == 0 || line[0] == '#') continue;
 
-                    string type = tokens[0].ToLowerInvariant();
-
-                    Func<int, float> ParseFloat = (index) => {
-                        if (index >= tokens.Length || 
-                                !float.TryParse(tokens[index], NumberStyles.Float, CultureInfo.InvariantCulture, out float result))
-                        {
-                            return 0f;
-                        }
-                        return result;
-                    };
-
-                    switch (type) {
-                        case "v":
-                            rawPositions.Add(new Vector3(ParseFloat(1), ParseFloat(2), ParseFloat(3)));
-                            break;
-
-                        case "vt":
-                            rawUVs.Add(new Vector2(ParseFloat(1), ParseFloat(2)));
-                            break;
-
-                        case "vn":
-                            rawNormals.Add(new Vector3(ParseFloat(1), ParseFloat(2), ParseFloat(3)));
-                            break;
-
-                        case "f":
-                            for (int i = 1; i < tokens.Length; i++) {
-                                if (i == 4 && tokens.Length > 4) {
-                                    // If it's a quad (f v1 v2 v3 v4), we treat it as two triangles: (v1, v3, v4)
-                                    // We need to add refs for v1, v3, v4 here.
-
-                                    // To keep it simple for now, we only read triangles (3 refs):
-                                    // For full compatibility, implement Fan Triangulation here.
-
-                                    // For a quad (v1, v2, v3, v4):
-                                    // Triangle 1: v1, v2, v3
-                                    // Triangle 2: v1, v3, v4  <-- This second triangle needs its indices added here
-                                }
-
-                                // For a simple triangle, just add the three references:
-                                if (i <= 3) faceRefs.Add(tokens[i]);
-                            }
-                            break;
-                    }
+                if(line.StartsWith("v ",StringComparison.Ordinal)){
+                    rawPositions.Add(ParseVertex(line[2..]));
                 }
-            }
-            catch (Exception ex) {
-                Console.WriteLine($"Error reading file: {ex.Message}");
+                else if(line.StartsWith("vt ",StringComparison.Ordinal)){
+                    rawUVs.Add(ParseUV(line[3..]));
+                }
+                else if(line.StartsWith("vn ",StringComparison.Ordinal)){
+                    rawNormals.Add(ParseNormal(line[3..]));
+                }
+                else if(line.StartsWith("f ",StringComparison.Ordinal)){
+                    ParseFace(line[2..],faceRefs);
+                }
             }
 
             foreach (string refString in faceRefs) {
@@ -92,25 +81,48 @@ namespace MeshDataExtract{
                     string[] indices = refString.Split('/');
 
                     // OBJ indices are 1-based, so subtract 1 for 0-based C# lists
-                    int vIndex = int.Parse(indices[0]) - 1;
-                    int vtIndex = int.Parse(indices[1]) - 1;
-                    int vnIndex = int.Parse(indices[2]) - 1;
+                    // int vIndex = int.Parse(indices[0]) - 1;
+                    // int vtIndex = int.Parse(indices[1]) - 1;
+                    // int vnIndex = int.Parse(indices[2]) - 1;
+                    int vIndex = (indices.Length > 0 && !string.IsNullOrEmpty(indices[0])) ? int.Parse(indices[0]) - 1 : -1;
+                    int vtIndex = (indices.Length > 0 && !string.IsNullOrEmpty(indices[1])) ? int.Parse(indices[1]) - 1 : -1;
+                    int vnIndex = (indices.Length > 0 && !string.IsNullOrEmpty(indices[2])) ? int.Parse(indices[2]) - 1 : -1;
 
                     // d. Retrieve the data from the raw lists and append to the VBO stream (finalVertices)
 
-                    // Position (3 floats)
-                    finalVertices.Add(rawPositions[vIndex].X);
-                    finalVertices.Add(rawPositions[vIndex].Y);
-                    finalVertices.Add(rawPositions[vIndex].Z);
+                    if(vIndex >= 0 && vIndex < rawPositions.Count){
+                        // Position (3 floats)
+                        finalVertices.Add(rawPositions[vIndex].X);
+                        finalVertices.Add(rawPositions[vIndex].Y);
+                        finalVertices.Add(rawPositions[vIndex].Z);
+                    }
+                    else{
+                        finalVertices.Add(0);
+                        finalVertices.Add(0);
+                        finalVertices.Add(0);
+                    }
 
-                    // UV (2 floats)
-                    finalVertices.Add(rawUVs[vtIndex].X); // U component
-                    finalVertices.Add(rawUVs[vtIndex].Y); // V component
+                    if(vtIndex >= 0 && vtIndex < rawUVs.Count){
+                        // UV (2 floats)
+                        finalVertices.Add(rawUVs[vtIndex].X); // U component
+                        finalVertices.Add(rawUVs[vtIndex].Y); // V component
+                    }
+                    else{
+                        finalVertices.Add(0);
+                        finalVertices.Add(0);
+                    }
 
-                    // Normal (3 floats)
-                    finalVertices.Add(rawNormals[vnIndex].X);
-                    finalVertices.Add(rawNormals[vnIndex].Y);
-                    finalVertices.Add(rawNormals[vnIndex].Z);
+                    if(vnIndex >= 0 && vnIndex < rawNormals.Count){
+                        // Normal (3 floats)
+                        finalVertices.Add(rawNormals[vnIndex].X);
+                        finalVertices.Add(rawNormals[vnIndex].Y);
+                        finalVertices.Add(rawNormals[vnIndex].Z);
+                    }
+                    else{
+                        finalVertices.Add(0);
+                        finalVertices.Add(0);
+                        finalVertices.Add(0);
+                    }
 
                     // e. Increment the index counter for the next new vertex
                     currentIndex++;
@@ -172,7 +184,7 @@ namespace MeshDataExtract{
                         vertices.Add(fRes);
                 }
             }
-            
+
             int faceStartIndex = numberOfVerticies;
             int faceEndIndex = numberOfVerticies + numberOfFaces;
 
@@ -197,6 +209,45 @@ namespace MeshDataExtract{
                     indices.Add(faceVerts[i + 1]);
                 }
             }
+        }
+
+        static Vector3 ParseVertex(ReadOnlySpan<char> line){
+            float x = ParseNextFloat(ref line);
+            float y = ParseNextFloat(ref line);
+            float z = ParseNextFloat(ref line);
+            return new Vector3(x,y,z);
+        }
+
+        static Vector2 ParseUV(ReadOnlySpan<char> line){
+            float x = ParseNextFloat(ref line);
+            float y = ParseNextFloat(ref line);
+            return new Vector2(x,y);
+        }
+
+        static Vector3 ParseNormal(ReadOnlySpan<char> line){
+            float x = ParseNextFloat(ref line);
+            float y = ParseNextFloat(ref line);
+            float z = ParseNextFloat(ref line);
+            return new Vector3(x,y,z);
+        }
+
+        static void ParseFace(ReadOnlySpan<char> line,List<string> faceRefs){
+            while(!line.IsEmpty){
+                int space = line.IndexOf(' ');
+                ReadOnlySpan<char> token = (space == -1) ? line : line[..space];
+                line = (space == -1) ? ReadOnlySpan<char>.Empty : line[(space + 1)..];
+
+                if(token.Length > 0)
+                    faceRefs.Add(token.ToString());
+            }
+        }
+
+        static float ParseNextFloat(ref ReadOnlySpan<char> line){
+            int space = line.IndexOf(' ');
+            ReadOnlySpan<char> token = (space == -1) ? line : line[..space];
+            line = (space == -1) ? ReadOnlySpan<char>.Empty : line[(space + 1)..];
+
+            return float.TryParse(token,NumberStyles.Float,CultureInfo.InvariantCulture, out float val) ? val : 0f;
         }
     }
 }
