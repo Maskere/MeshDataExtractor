@@ -1,10 +1,106 @@
-﻿using System.Diagnostics;
+﻿using SharpGLTF.Memory;
+using SharpGLTF.Schema2;
+using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 
 namespace MeshDataExtract{
     public class MeshDataExtractor{
         static Stopwatch sw = new();
+
+        public void GlftDataExtractor(string? filePath, out List<float> finalVertices, out List<uint> finalIndices, out List<string> textureFilePaths){
+            finalVertices = new();
+            finalIndices = new();
+            textureFilePaths = new();
+            ModelRoot model = ModelRoot.Load(filePath);
+
+            Mesh mesh = model.LogicalMeshes[0];
+            MeshPrimitive primitive = mesh.Primitives[0];
+
+            finalIndices = primitive.GetIndices().Select(i => (uint)i).ToList();
+
+            Accessor positionAccessor = primitive.GetVertexAccessor("POSITION");
+            Accessor uvsAccessor = primitive.GetVertexAccessor("TEXCOORD_0");
+            Accessor normalsAccessor = primitive.GetVertexAccessor("NORMAL");
+            Accessor? jointAccessor = primitive.GetVertexAccessor("JOINTS_0");
+            Accessor? weightsAccessor = primitive.GetVertexAccessor("WEIGHTS_0");
+
+            Vector3[] positions = positionAccessor.AsVector3Array().ToArray();
+            Vector2[] uvs = uvsAccessor.AsVector2Array().ToArray();
+            Vector3[] normals = normalsAccessor.AsVector3Array().ToArray();
+            Vector4[] joints = jointAccessor?.AsVector4Array().ToArray() ?? Array.Empty<Vector4>();
+            Vector4[] weights = weightsAccessor?.AsVector4Array().ToArray() ?? Array.Empty<Vector4>();
+            
+            int vertexCount = positions.Length;
+
+            for(int i = 0; i < vertexCount; i++){
+                finalVertices.Add(positions[i].X);
+                finalVertices.Add(positions[i].Y);
+                finalVertices.Add(positions[i].Z);
+
+                if(uvs.Length > i){
+                    finalVertices.Add(uvs[i].X);
+                    finalVertices.Add(uvs[i].Y);
+                }
+                else{
+                    finalVertices.Add(0f);
+                    finalVertices.Add(0f);
+                }
+
+                if(normals.Length > i){
+                    finalVertices.Add(normals[i].X);
+                    finalVertices.Add(normals[i].Y);
+                    finalVertices.Add(normals[i].Z);
+                }
+                else{
+                    finalVertices.Add(0);
+                    finalVertices.Add(0);
+                    finalVertices.Add(0);
+                }
+
+                if(joints.Length > i){
+                    finalVertices.Add(joints[i].X);
+                    finalVertices.Add(joints[i].Y);
+                    finalVertices.Add(joints[i].Z);
+                    finalVertices.Add(joints[i].W);
+                }
+                else{
+                    finalVertices.Add(0);
+                    finalVertices.Add(0);
+                    finalVertices.Add(0);
+                    finalVertices.Add(0);
+                }
+                
+                if(weights.Length > i){
+                    finalVertices.Add(weights[i].X);
+                    finalVertices.Add(weights[i].Y);
+                    finalVertices.Add(weights[i].Z);
+                    finalVertices.Add(weights[i].W);
+                }
+                else{
+                    finalVertices.Add(0);
+                    finalVertices.Add(0);
+                    finalVertices.Add(0);
+                    finalVertices.Add(0);
+                }
+            }
+
+            if(primitive.Material == null) return;
+
+            Material material = primitive.Material;
+            var pbr = material.WithPBRMetallicRoughness();
+            Texture? gltfTexture = pbr.GetDiffuseTexture();
+
+            if(gltfTexture != null){
+                Image? image = gltfTexture.PrimaryImage;
+
+                if(image != null){
+                    string uniqueKey = image.AlternateWriteFileName ?? image.Name ?? $"glTF_Texture_{gltfTexture.LogicalIndex}";
+
+                    textureFilePaths.Add(uniqueKey);
+                }
+            }
+        }
 
         public void FBXDataExtractor(string? filePath, out List<float> finalVertices, out List<uint> finalIndices){
             if (filePath == null) throw new ArgumentException("Invalid file path.");
@@ -33,6 +129,7 @@ namespace MeshDataExtract{
             Dictionary<string, uint> vertexMap = new();
             uint currentIndex = 0; 
 
+            //HUSK RÆKKEFØLGEN HER
             List<Vector3> rawPositions = new();
             List<Vector2> rawUVs = new();
             List<Vector3> rawNormals = new();
@@ -81,9 +178,6 @@ namespace MeshDataExtract{
                     string[] indices = refString.Split('/');
 
                     // OBJ indices are 1-based, so subtract 1 for 0-based C# lists
-                    // int vIndex = int.Parse(indices[0]) - 1;
-                    // int vtIndex = int.Parse(indices[1]) - 1;
-                    // int vnIndex = int.Parse(indices[2]) - 1;
                     int vIndex = (indices.Length > 0 && !string.IsNullOrEmpty(indices[0])) ? int.Parse(indices[0]) - 1 : -1;
                     int vtIndex = (indices.Length > 0 && !string.IsNullOrEmpty(indices[1])) ? int.Parse(indices[1]) - 1 : -1;
                     int vnIndex = (indices.Length > 0 && !string.IsNullOrEmpty(indices[2])) ? int.Parse(indices[2]) - 1 : -1;
